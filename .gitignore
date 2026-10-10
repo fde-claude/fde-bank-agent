@@ -1,0 +1,9 @@
+# [OPS] first security control of the project: the secret never enters git.
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# [OPS] signing material and generated artifacts
+cosign.key
+sbom*.json

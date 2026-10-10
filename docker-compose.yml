@@ -1,0 +1,30 @@
+# bank-agent / Step 3 — the local stack, one service for now.
+# Module 4 adds litellm, postgres and redis as more services in this same file.
+services:
+  agent:
+    build: .
+    # [OPS] tag = app version. Never :latest. In Module 5 CI stamps the git SHA here.
+    image: bank-agent:0.2.0
+    # [OPS] secrets arrive at runtime, never at build time. Same contract as K8s Secrets.
+    env_file: .env
+    environment:
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    # [OPS] immutable root filesystem: the app writes nothing to disk, so nothing can be dropped onto it
+    read_only: true
+    tmpfs:
+      - /tmp
+    # [OPS] a web service needs no Linux capabilities at all
+    cap_drop:
+      - ALL
+    # [OPS] blocks setuid-style privilege escalation
+    security_opt:
+      - no-new-privileges:true
+    # [OPS] I/O-bound workload: small memory, trivial CPU. These numbers become K8s requests/limits.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    restart: unless-stopped

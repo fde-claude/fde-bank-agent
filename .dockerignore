@@ -1,0 +1,13 @@
+# [OPS] What never enters the build context, so it can never enter the image.
+# The Dockerfile copies an explicit file list; this is the second lock on the same door.
+.env
+.env.*
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+Dockerfile
+docker-compose.yml
+.dockerignore
+*.md
