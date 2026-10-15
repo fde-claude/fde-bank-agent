@@ -16,6 +16,7 @@ import uuid
 import anthropic
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from prometheus_client import Counter, Gauge, Histogram, make_asgi_app
 from pydantic import BaseModel, Field
 
 from agent import MODEL, run_agent  # DEV: the Step 1 loop, reused as-is
@@ -25,7 +26,17 @@ logging.basicConfig(  # [OPS] log level via env; one line per event, parseable b
 )
 log = logging.getLogger("bank-agent")
 
-app = FastAPI(title="bank-agent", version="0.2.0")  # version shows in /docs; later it comes from the image tag
+app = FastAPI(title="bank-agent", version="0.4.0")  # version shows in /docs; later it comes from the image tag
+
+# [OPS] Step 8: the three metrics every HTTP service should export. Scraped in-cluster by Prometheus via /metrics;
+#       the north gateway never publishes that path. Route paths are static here, so they are safe as label values.
+REQUESTS = Counter("http_requests_total", "Requests by method, path and status", ["method", "path", "status"])
+IN_FLIGHT = Gauge("http_requests_in_flight", "Requests being handled right now", ["path"])  # [OPS] the autoscaling signal
+LATENCY = Histogram(
+    "http_request_duration_seconds", "Request latency in seconds", ["path"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 180),  # [OPS] top bucket = the gateway read timeout
+)
+app.mount("/metrics", make_asgi_app())
 
 
 class ChatRequest(BaseModel):  # DEV: the request contract. Validation is automatic: bad input -> 422, never reaches the model
@@ -40,13 +51,24 @@ class ChatReply(BaseModel):
 @app.middleware("http")
 async def access_log(request: Request, call_next):
     # [OPS] one structured access-log line per request: id, route, status, latency. Never the message body (PII).
+    path = request.url.path
+    if path.startswith("/metrics"):  # the scrape itself is not traffic
+        return await call_next(request)
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())  # honour the edge's ID, else mint one
+    request.state.request_id = request_id  # Step 10: make it available to the route, which forwards it to the gateway
     start = time.perf_counter()
-    response = await call_next(request)
+    IN_FLIGHT.labels(path).inc()
+    try:
+        response = await call_next(request)
+    finally:
+        IN_FLIGHT.labels(path).dec()  # [OPS] decremented even on failure, or the gauge would drift upward forever
+    elapsed = time.perf_counter() - start
+    LATENCY.labels(path).observe(elapsed)
+    REQUESTS.labels(request.method, path, str(response.status_code)).inc()
     response.headers["x-request-id"] = request_id  # echo it back so client, gateway and app logs can be joined
     log.info(
         "request_id=%s method=%s path=%s status=%s latency_ms=%.0f",
-        request_id, request.method, request.url.path, response.status_code, (time.perf_counter() - start) * 1000,
+        request_id, request.method, path, response.status_code, elapsed * 1000,
     )
     return response
 
@@ -73,7 +95,7 @@ def ready():
 
 
 @app.post("/chat", response_model=ChatReply)
-def chat(body: ChatRequest):
+def chat(body: ChatRequest, request: Request):
     # Plain `def`, not `async def`, on purpose: the SDK call blocks, so FastAPI runs it in a worker thread
     # and the event loop stays free to answer probes. The thread pool size is this pod's concurrency ceiling.
-    return ChatReply(reply=run_agent(body.message), model=MODEL)
+    return ChatReply(reply=run_agent(body.message, request_id=request.state.request_id), model=MODEL)

@@ -1,0 +1,14 @@
+# deploy/k8s/10-configmap.yaml
+# [OPS] Non-secret configuration: the same keys as .env minus the secret.
+#       Changing MODEL_ID here is a config rollout, not an image rebuild.
+#       Note: pods do not restart on ConfigMap edits; `kubectl rollout restart` (Helm automates this in Step 6).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bank-agent-config
+  namespace: bank-agent
+  labels:
+    app.kubernetes.io/name: bank-agent
+data:
+  MODEL_ID: "claude-haiku-5-5"
+  LOG_LEVEL: "INFO"

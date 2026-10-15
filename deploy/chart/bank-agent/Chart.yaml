@@ -1,0 +1,8 @@
+apiVersion: v2
+name: bank-agent
+description: Claude-powered retail-banking assistant (FDE / GenAIOps training track)
+type: application
+# [OPS] chart version: bump whenever a template changes
+version: 0.3.0
+# [OPS] app version: becomes the default image tag
+appVersion: "0.4.0"

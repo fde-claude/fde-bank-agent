@@ -1,0 +1,9 @@
+# deploy/chart/litellm/values-dev.yaml — laptop overrides
+replicaCount: 2            # keep 2: the HA and shared-state drills need two gateway pods
+resources:
+  requests:
+    cpu: 100m
+    memory: 384Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi

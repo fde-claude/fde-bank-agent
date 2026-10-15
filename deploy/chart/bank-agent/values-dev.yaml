@@ -1,0 +1,25 @@
+# deploy/chart/bank-agent/values-dev.yaml
+# Laptop overrides only. Everything not listed comes from values.yaml.
+# Usage: helm upgrade --install bank-agent . -n bank-agent -f values-dev.yaml
+image:
+  tag: "0.4.0"
+
+config:
+  LOG_LEVEL: DEBUG      # shows every outbound HTTPS call the SDK makes: useful on a laptop, noisy in production
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+# Step 8: turn on after kube-prometheus-stack and KEDA are installed (their CRDs must exist first)
+metrics:
+  serviceMonitor:
+    enabled: true
+
+autoscaling:
+  enabled: true
+  maxReplicas: 4       # laptop ceiling

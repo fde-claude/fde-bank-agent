@@ -1,0 +1,18 @@
+# deploy/k8s/40-service.yaml
+# [OPS] Stable virtual IP + DNS name (bank-agent.bank-agent.svc) in front of whichever pods are Ready right now.
+#       ClusterIP = internal only. The north gateway (APISIX, Step 7) will be the only way in from outside.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bank-agent
+  namespace: bank-agent
+  labels:
+    app.kubernetes.io/name: bank-agent
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: bank-agent
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

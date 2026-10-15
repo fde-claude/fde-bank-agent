@@ -1,0 +1,16 @@
+# [OPS] ClusterIP only. The agent reaches it as http://litellm.litellm.svc:4000; nothing outside the cluster can.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "litellm.fullname" . }}
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "litellm.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

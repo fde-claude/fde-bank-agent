@@ -1,0 +1,61 @@
+# deploy/apisix/values.yaml
+# Helm values for the north gateway: chart apisix/apisix (APISIX 3.19, ingress controller 2.x, embedded dashboard).
+# Install: helm upgrade --install apisix apisix/apisix -n apisix -f deploy/apisix/values.yaml
+# The release name MUST be "apisix": the ingress controller looks for the admin Service "apisix-admin".
+
+service:
+  # [OPS] Docker Desktop maps a LoadBalancer to localhost:80. On clusters without a load balancer use NodePort.
+  type: NodePort
+
+# [OPS] data plane is stateless: 1 on a laptop, 2+ in production
+replicaCount: 1
+
+apisix:
+  admin:
+    enabled: true
+    # [OPS] embedded dashboard, served by the admin API at :9180/ui/ (never exposed outside the cluster)
+    enable_admin_ui: true
+    type: ClusterIP
+    credentials:
+      # [OPS] the chart's default admin key is public knowledge. Ours lives in a Secret created imperatively:
+      #       kubectl -n apisix create secret generic apisix-admin-keys --from-literal=admin=... --from-literal=viewer=...
+      secretName: apisix-admin-keys
+      secretAdminKey: admin
+      secretViewerKey: viewer
+    allow:
+      # [OPS] the ingress-controller pod must reach the admin API; the admin Service is ClusterIP and key-protected.
+      #       Production: replace with the cluster's pod CIDR.
+      ipList:
+        - 0.0.0.0/0
+
+etcd:
+  # [OPS] APISIX's config store. 1 replica on a laptop, 3 in production. Pin the image tag before production
+  #       (the chart default is a floating tag).
+  enabled: true
+  replicaCount: 1
+
+ingress-controller:
+  enabled: true
+  config:
+    provider:
+      type: apisix
+    kubernetes:
+      ingressClass: apisix
+  gatewayProxy:
+    # [OPS] creates GatewayProxy "apisix-config" and IngressClass "apisix", wired to the admin API below
+    createDefault: true
+    provider:
+      type: ControlPlane
+      controlPlane:
+        auth:
+          type: AdminKey
+          adminKey:
+            valueFrom:
+              secretKeyRef:
+                name: apisix-admin-keys
+                key: admin
+  apisix:
+    adminService:
+      namespace: apisix
+      name: apisix-admin
+      port: 9180

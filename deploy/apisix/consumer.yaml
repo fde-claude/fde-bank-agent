@@ -1,0 +1,16 @@
+# deploy/apisix/consumer.yaml
+# [OPS] A consumer is an identity the gateway recognises: here the client application calling /chat.
+#       Its JWT credential (key + HS256 secret) lives in a Kubernetes Secret, never in this file:
+#       kubectl -n bank-agent create secret generic bank-client-jwt --from-literal=key=bank-client --from-literal=secret=<random>
+#       Step 22 replaces the shared secret with Keycloak-issued RS256 tokens (public key, no shared secret).
+apiVersion: apisix.apache.org/v2
+kind: ApisixConsumer
+metadata:
+  name: bank-client
+  namespace: bank-agent
+spec:
+  ingressClassName: apisix
+  authParameter:
+    jwtAuth:
+      secretRef:
+        name: bank-client-jwt

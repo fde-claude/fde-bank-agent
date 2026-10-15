@@ -1,30 +1,112 @@
-# bank-agent / Step 3 — the local stack, one service for now.
-# Module 4 adds litellm, postgres and redis as more services in this same file.
+# bank-agent / Step 9 — the local stack: agent + south AI gateway (LiteLLM) + its Postgres + Redis.
+# [OPS] Each service receives exactly the variables it needs, interpolated from .env by Compose.
+#       No service gets the whole .env: the agent never sees the gateway's master key, and after Step 10
+#       the agent will not see the provider key either. Same principle as one Kubernetes Secret per workload.
 services:
   agent:
     build: .
     # [OPS] tag = app version. Never :latest. In Module 5 CI stamps the git SHA here.
-    image: bank-agent:0.2.0
-    # [OPS] secrets arrive at runtime, never at build time. Same contract as K8s Secrets.
-    env_file: .env
+    image: bank-agent:0.4.0
     environment:
+      # [OPS] Step 10: the SDK reads these two natively. The app now talks to the gateway and holds a revocable,
+      #       budgeted virtual key. The provider key no longer exists anywhere in the app's world.
+      ANTHROPIC_BASE_URL: http://litellm:4000
+      ANTHROPIC_API_KEY: ${LITELLM_VIRTUAL_KEY}
+      MODEL_ID: bank-primary          # an alias; the gateway decides Haiku or Opus
+      SDK_MAX_RETRIES: "0"            # the gateway owns retries now; two retry layers multiply
       LOG_LEVEL: INFO
+    depends_on:
+      litellm:
+        condition: service_healthy
     ports:
       - "8000:8000"
-    # [OPS] immutable root filesystem: the app writes nothing to disk, so nothing can be dropped onto it
     read_only: true
     tmpfs:
       - /tmp
-    # [OPS] a web service needs no Linux capabilities at all
     cap_drop:
       - ALL
-    # [OPS] blocks setuid-style privilege escalation
     security_opt:
       - no-new-privileges:true
-    # [OPS] I/O-bound workload: small memory, trivial CPU. These numbers become K8s requests/limits.
     deploy:
       resources:
         limits:
           cpus: "0.50"
           memory: 256M
     restart: unless-stopped
+
+  postgres:
+    # [OPS] Tier-0 for the gateway: every virtual key, team, budget and spend record lives here. Losing it = total
+    #       outage of the model path. Pinned major version; backups and HA come with Step 11.
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  redis:
+    # [OPS] shared state for the gateway (rate limits, cooldowns, budgets across replicas) and, from Step 12,
+    #       the agent's conversation memory. Persistence off for now: everything in it is rebuildable.
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: unless-stopped
+
+  litellm:
+    # [OPS] "main-stable" is the stable release channel, a moving tag. Pin it after the first pull:
+    #       docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/berriai/litellm:main-stable   -> image: ...@sha256:...
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}     # [OPS] provider key: held only by the gateway
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}   # [OPS] admin credential; UI login when UI_* are unset
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}       # [OPS] encrypts credentials stored in the DB; set once, never rotate
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD}
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    volumes:
+      # [OPS] one file, two consumers: Compose mounts it here; the Kubernetes ConfigMap in deploy/chart/litellm renders the same file
+      - ./deploy/chart/litellm/files/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # [OPS] liveliness only: "is the gateway process up". Never a probe that calls the provider.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    restart: unless-stopped
+
+volumes:
+  pgdata:

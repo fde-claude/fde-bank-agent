@@ -1,0 +1,7 @@
+apiVersion: v2
+name: litellm
+description: South AI gateway (LiteLLM proxy) with its Postgres and Redis, for the bank-agent platform track
+type: application
+version: 0.1.0
+# [OPS] the proxy image tag is pinned in values.yaml; this appVersion is informational
+appVersion: "main-stable"

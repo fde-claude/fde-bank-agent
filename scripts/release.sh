@@ -7,8 +7,8 @@
 # [OPS] the three safety belts of any ops script: stop on error, stop on unset variable, stop on a failure inside a pipe
 set -euo pipefail
 
-OWNER="${OWNER:?set OWNER to your GitHub user or org, lowercase}"
-VERSION="${VERSION:-0.2.0}"
+OWNER="sidd-harth"
+VERSION="0.3.0"
 IMAGE="ghcr.io/${OWNER}/bank-agent"
 KEY="${COSIGN_KEY:-cosign.key}"   # private key: never committed, never in the image
 PUB="${COSIGN_PUB:-cosign.pub}"   # public key: committed; Kyverno reads it in Module 6 to admit only images we signed

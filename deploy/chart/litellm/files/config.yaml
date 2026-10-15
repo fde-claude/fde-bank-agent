@@ -1,0 +1,54 @@
+# deploy/litellm/config.yaml
+# The south AI gateway. Split of responsibilities:
+#   this file (git)  -> models, aliases, fallbacks, retries, timeouts, privacy settings   = configuration
+#   the admin UI/DB  -> teams, virtual keys, budgets, rate limits, spend, logs            = data
+# Run locally: docker compose up -d        UI: http://localhost:4000/ui
+
+model_list:
+  # [OPS] the app calls aliases, never raw model IDs. Changing the model behind an alias is a gateway change, not an app release.
+  - model_name: bank-primary
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY   # [OPS] the only place the provider key exists from Step 10 on
+  - model_name: bank-fallback
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+router_settings:
+  # [OPS] after retries on bank-primary fail (429, 5xx, timeout), the request is re-sent to bank-fallback:
+  #       "pay more rather than fail" on a customer-facing path. Both go to the same provider; a provider-wide
+  #       outage needs a second provider or Claude via a second cloud (Bedrock / Vertex) in this list.
+  fallbacks:
+    - bank-primary: ["bank-fallback"]
+  num_retries: 2            # the retries that used to live in the SDK (agent.py line 21). Step 10 sets the SDK to 0.
+  allowed_fails: 3          # failures per minute before a deployment is cooled down...
+  cooldown_time: 30         # ...and for how long traffic avoids it
+  enable_pre_call_checks: true                 # reject requests that cannot fit the model's context window before paying for them
+  optional_pre_call_checks: ["prompt_caching"] # keep requests that use Anthropic prompt caching on the same deployment
+  # [OPS] shared state for rate limits, budgets and cooldowns across gateway replicas (Step 11). Harmless with one replica.
+  redis_host: os.environ/REDIS_HOST
+  redis_port: os.environ/REDIS_PORT
+
+litellm_settings:
+  drop_params: true         # silently drop request params a provider does not support instead of failing the call
+  request_timeout: 120      # [OPS] per model call. Opus on a long answer can take a minute; the edge (APISIX) allows 180
+  # [OPS] response caching is OFF on purpose: this traffic is personalised. A cached "your balance is ..." served to
+  #       another customer who typed the same words is a data breach. Anthropic prompt caching (cache_control inside a
+  #       request) is a different mechanism and is unaffected by this setting.
+  cache: false
+  # [OPS] dev: logging callbacks (Langfuse, Step 15) may see message content. Production: true, so only metadata leaves.
+  turn_off_message_logging: false
+  json_logs: true
+
+general_settings:
+  dangerously_allow_mock_testing_request_params: true  # Add this line
+  master_key: os.environ/LITELLM_MASTER_KEY    # [OPS] admin credential for the gateway API and UI; the proxy refuses weak values
+  database_url: os.environ/DATABASE_URL        # [OPS] Tier-0 store: keys, teams, budgets, spend. Back it up (Step 11).
+  store_model_in_db: false                     # models and routing come from this file, not from the UI
+  store_prompts_in_spend_logs: false           # spend logs keep tokens, cost, latency, key; never prompt or response text (PII)
+  maximum_spend_logs_retention_period: 30d     # [OPS] data retention is a setting, not an afterthought
+  # [OPS] the real throttle behind autoscaling: concurrency ceilings at the gateway, per deployment and overall.
+  #       Past the provider quota, more agent pods only produce more 429s; this is where that is bounded.
+  max_parallel_requests: 20
+  global_max_parallel_requests: 40

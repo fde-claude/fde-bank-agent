@@ -1,0 +1,60 @@
+# deploy/chart/litellm/values.yaml
+# [OPS] The gateway is Tier-0: every model call of every agent passes through it. Two replicas from day one,
+#       shared state in Redis, keys/budgets/spend in Postgres. Release name MUST be "litellm": the app's config
+#       points at http://litellm.litellm.svc:4000 and the DATABASE_URL in the Secret points at litellm-postgres.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/berriai/litellm
+  tag: main-stable          # [OPS] stable channel, a moving tag. Pin: set digest after the first pull and commit it.
+  digest: ""                # sha256:... wins over tag when set
+  pullPolicy: IfNotPresent
+
+# [OPS] created imperatively, never by the chart. Keys expected:
+#   ANTHROPIC_API_KEY, LITELLM_MASTER_KEY, LITELLM_SALT_KEY, UI_USERNAME, UI_PASSWORD, POSTGRES_PASSWORD, DATABASE_URL
+existingSecret: litellm-secrets
+
+service:
+  port: 4000
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
+
+# [OPS] the proxy runs Prisma migrations at first start: the startup probe gives it two minutes before liveness applies
+probes:
+  startupFailureThreshold: 60
+  startupPeriodSeconds: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  storage: 1Gi
+  storageClassName: ""      # empty = the cluster default (hostpath on Docker Desktop, managed disk on AKS)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

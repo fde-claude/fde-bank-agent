@@ -1,0 +1,11 @@
+# [OPS] the gateway configuration, verbatim from files/config.yaml (the same file Compose mounts).
+#       A change to it changes the checksum annotation on the Deployment, which rolls the gateway pods.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "litellm.fullname" . }}-config
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+data:
+  config.yaml: |-
+{{ .Files.Get "files/config.yaml" | indent 4 }}

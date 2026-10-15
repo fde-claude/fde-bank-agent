@@ -1,0 +1,32 @@
+{{- if .Values.autoscaling.enabled }}
+# [OPS] KEDA creates and owns the HorizontalPodAutoscaler from this object. Signal: in-flight /chat requests per pod.
+#       Scale out fast (10 s polling), scale in slowly (60 s cooldown + stabilisation) so a quiet second doesn't kill pods mid-request.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "bank-agent.fullname" . }}
+  labels:
+    {{- include "bank-agent.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "bank-agent.fullname" . }}
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  pollingInterval: {{ .Values.autoscaling.pollingInterval }}
+  cooldownPeriod: {{ .Values.autoscaling.cooldownPeriod }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.autoscaling.prometheusAddress | quote }}
+        query: sum(http_requests_in_flight{path="/chat", namespace={{ .Release.Namespace | quote }}})
+        threshold: {{ .Values.autoscaling.inFlightPerPod | quote }}
+{{- end }}

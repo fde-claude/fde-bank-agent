@@ -1,0 +1,36 @@
+# [OPS] `helm test <release>` runs this pod once: a readiness check through the Service, from inside the cluster.
+#       Reuses our own image (already pullable, already Pod-Security compliant) instead of a third-party curl image.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "bank-agent.fullname" . }}-test
+  labels:
+    {{- include "bank-agent.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: readiness-check
+      image: {{ include "bank-agent.image" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      command:
+        - python
+        - -c
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://{{ include "bank-agent.fullname" . }}:{{ .Values.service.port }}/ready', timeout=5); print(r.read().decode()); sys.exit(0 if r.status == 200 else 1)"

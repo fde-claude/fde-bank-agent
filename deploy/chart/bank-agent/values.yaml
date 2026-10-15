@@ -1,0 +1,111 @@
+# deploy/chart/bank-agent/values.yaml
+# [OPS] Defaults are production-leaning. Environment files (values-dev.yaml) override only what differs.
+#       Everything that was hard-coded in deploy/k8s/*.yaml is a knob here.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/sidd-harth/bank-agent
+  tag: ""             # empty = Chart.appVersion
+  digest: ""          # [OPS] when set (sha256:...) it wins over tag. CI stamps this in Module 5.
+  pullPolicy: IfNotPresent
+
+# [OPS] created imperatively (Step 5), never by the chart
+imagePullSecrets:
+  - name: ghcr-pull
+
+# [OPS] non-secret config -> ConfigMap. Any change here rolls the pods (checksum annotation on the Deployment).
+#       Step 11: the app talks to the in-cluster gateway and calls an alias; retries belong to the gateway.
+config:
+  ANTHROPIC_BASE_URL: http://litellm.litellm.svc:4000
+  MODEL_ID: bank-primary
+  SDK_MAX_RETRIES: "0"
+  LOG_LEVEL: INFO
+
+# [OPS] secret config is referenced, never created here. External Secrets Operator fills it in Module 6.
+#       Step 11: ANTHROPIC_API_KEY in this Secret is a LiteLLM virtual key, not the provider key.
+existingSecret: bank-agent-secrets
+
+# [OPS] dedicated identity with zero permissions and no API token: least privilege by default
+serviceAccount:
+  create: true
+  name: ""
+  automountToken: false
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+probes:
+  startup:
+    path: /health
+    periodSeconds: 2
+    failureThreshold: 30
+  liveness:
+    path: /health
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /ready
+    periodSeconds: 5
+    failureThreshold: 2
+
+terminationGracePeriodSeconds: 90
+preStopSleepSeconds: 5
+
+strategy:
+  maxUnavailable: 0
+  maxSurge: 1
+
+# [OPS] soft = prefer spreading across nodes, never block scheduling (right for a laptop and most clusters)
+#       hard = refuse to co-locate (multi-node production only); none = off
+antiAffinity: soft
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# [OPS] Prometheus scrapes /metrics through a ServiceMonitor. Needs the Prometheus Operator CRDs (kube-prometheus-stack).
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    labels:
+      release: monitoring
+
+# [OPS] KEDA scales on in-flight /chat requests per pod, the honest signal for an I/O-bound service.
+#       When enabled, the Deployment's replicas field is omitted so Helm never fights the autoscaler.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  inFlightPerPod: 4
+  pollingInterval: 10
+  cooldownPeriod: 60
+  prometheusAddress: http://monitoring-kube-prometheus-prometheus.monitoring.svc:9090
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []

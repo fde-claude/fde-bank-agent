@@ -1,0 +1,47 @@
+# deploy/apisix/route.yaml
+# [OPS] The only published surface of the agent. /health, /ready and /docs stay internal: the edge serves 404 for them.
+apiVersion: apisix.apache.org/v2
+kind: ApisixRoute
+metadata:
+  name: bank-agent
+  namespace: bank-agent
+spec:
+  ingressClassName: apisix
+  http:
+    - name: chat
+      match:
+        paths:
+          - /chat
+        methods:
+          - POST
+      backends:
+        - serviceName: bank-agent
+          servicePort: 80
+      # [OPS] edge timeouts. read = how long the gateway waits for the agent's answer. 180 s is deliberately SHORTER than
+      #       the agent's 15-minute worst case: the mismatch is the lesson for Step 8/9 (bound the work, then stream).
+      timeout:
+        connect: 5s
+        send: 60s
+        read: 180s
+      # [OPS] no valid JWT, no request. Consumers are defined in consumer.yaml.
+      authentication:
+        enable: true
+        type: jwtAuth
+      plugins:
+        # [OPS] per-consumer quota: 3 requests per 30 seconds per identity, 429 beyond. Protects the model budget behind us.
+        - name: limit-count
+          enable: true
+          config:
+            count: 3
+            time_window: 30
+            key_type: var
+            key: consumer_name
+            rejected_code: 429
+            policy: local
+            show_limit_quota_header: true
+        # [OPS] mint X-Request-Id at the edge and echo it in the response; app.py line 43 picks it up unchanged
+        - name: request-id
+          enable: true
+          config:
+            header_name: X-Request-Id
+            include_in_response: true

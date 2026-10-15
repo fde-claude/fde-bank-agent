@@ -1,0 +1,106 @@
+# The gateway itself. Stateless: all state is in Postgres (keys, budgets, spend) and Redis (rate limits, cooldowns),
+# which is what makes two replicas behave as one gateway.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "litellm.fullname" . }}
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+  annotations:
+    # [OPS] documented exceptions, not silent ones: the upstream image picks its own user and writes at startup
+    #       (Prisma). Rebuilding it non-root and read-only is tracked for Module 6 (Kyverno will enforce it then).
+    ignore-check.kube-linter.io/run-as-non-root: "upstream litellm image; hardened rebuild planned in Module 6"
+    ignore-check.kube-linter.io/no-read-only-root-fs: "upstream litellm image writes at startup; hardened rebuild planned in Module 6"
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "litellm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  template:
+    metadata:
+      labels:
+        {{- include "litellm.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "litellm.fullname" . }}
+      automountServiceAccountToken: false
+      # [OPS] in-flight model calls finish before the pod goes; the gateway's own request_timeout is 120 s
+      terminationGracePeriodSeconds: 150
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "litellm.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: proxy
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: litellm
+          image: {{ include "litellm.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/app/config.yaml", "--port", "4000"]
+          ports:
+            - name: http
+              containerPort: 4000
+          # [OPS] every secret the gateway needs, and only the gateway: provider key, master key, salt, DB URL, UI login
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          env:
+            - name: REDIS_HOST
+              value: {{ include "litellm.fullname" . }}-redis
+            - name: REDIS_PORT
+              value: "6379"
+          # [OPS] the upstream image chooses its own user; we drop what we can without rebuilding it.
+          #       Rebuilding the gateway image non-root and read-only is a Module 6 item.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # [OPS] first start runs database migrations: startup probe allows startupFailureThreshold x period seconds
+          startupProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            periodSeconds: {{ .Values.probes.startupPeriodSeconds }}
+            failureThreshold: {{ .Values.probes.startupFailureThreshold }}
+          # [OPS] liveliness = process answers. Never the provider.
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # [OPS] readiness = can serve: includes the database connection. A pod that lost Postgres leaves the Service.
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "litellm.fullname" . }}-config

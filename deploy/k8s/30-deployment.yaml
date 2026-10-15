@@ -1,0 +1,119 @@
+# deploy/k8s/30-deployment.yaml
+# The Deployment is the contract between the image (Module 2) and the cluster:
+# how many copies, how to roll them, who they run as, what they may do, how they are health-checked.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bank-agent
+  namespace: bank-agent
+  labels:
+    app.kubernetes.io/name: bank-agent
+    app.kubernetes.io/version: "0.2.0"
+spec:
+  # [OPS] two from day one: a zero-downtime rolling update is impossible with one pod
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # [OPS] never remove capacity during a rollout: add one new pod, wait for Ready, then retire one old pod
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bank-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bank-agent
+        app.kubernetes.io/version: "0.2.0"
+    spec:
+      # [OPS] pull credentials for the private GHCR package; created imperatively, never committed
+      imagePullSecrets:
+        - name: ghcr-pull
+      # [OPS] the app never talks to the Kubernetes API, so it gets no API token to leak
+      automountServiceAccountToken: false
+      # [OPS] time for in-flight agent runs to finish after SIGTERM. Long on purpose; tightened once the gateway owns timeouts
+      terminationGracePeriodSeconds: 90
+      # [OPS] pod-level security context: WHO we are. Matches the image (UID 10001) and the "restricted" profile
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # [OPS] soft anti-affinity: spread replicas across nodes when there are several, don't block scheduling when there's one
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: bank-agent
+      containers:
+        - name: agent
+          # [OPS] tag for now (edit CHANGE-ME). In Module 5, CI stamps the immutable digest here instead
+          image: ghcr.io/sidd-harth/bank-agent:0.2.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          # [OPS] config and secret both arrive as env vars, exactly what load_dotenv() did on your laptop
+          envFrom:
+            - configMapRef:
+                name: bank-agent-config
+            - secretRef:
+                name: bank-agent-secrets
+          # [OPS] container-level security context: WHAT we may do (nothing beyond serving HTTP)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # [OPS] requests = what the scheduler reserves. I/O-bound workload: tiny CPU, modest memory
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            # [OPS] memory limit protects neighbours (exceed it = OOM-killed). CPU limit is 10x the request on purpose:
+            #       a tight CPU limit throttles and adds latency to a service that mostly waits on the network
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          # [OPS] startup probe shields slow starts: liveness is paused until this passes (30 x 2 s = 60 s budget)
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          # [OPS] liveness: "is the process wedged?" -> restart. Never depends on the model provider
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # [OPS] readiness: "can this pod take traffic?" -> in or out of the Service, no restart
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          # [OPS] the sleep gives the endpoint controller time to remove this pod from the Service BEFORE SIGTERM arrives,
+          #       so no request is routed to a pod that is already shutting down
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # read-only root filesystem needs an explicit scratch space
+        - name: tmp
+          emptyDir: {}

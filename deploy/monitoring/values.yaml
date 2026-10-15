@@ -1,0 +1,57 @@
+# deploy/monitoring/values.yaml
+# Helm values for prometheus-community/kube-prometheus-stack (Prometheus Operator + Prometheus + Grafana + Alertmanager).
+# Install: helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace -f deploy/monitoring/values.yaml
+# The release name MUST be "monitoring": the chart's ScaledObject points at monitoring-kube-prometheus-prometheus.
+
+prometheus:
+  prometheusSpec:
+    # [OPS] the classic gotcha: by default Prometheus only picks up ServiceMonitors carrying the release label.
+    #       false = pick up ServiceMonitors from every namespace, including bank-agent's.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    retention: 2d                 # laptop; 15d+ in production, with persistent storage
+    scrapeInterval: 15s
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+
+grafana:
+  enabled: true
+  # [OPS] admin password from a Secret created imperatively, never the chart default:
+  #       kubectl -n monitoring create secret generic grafana-admin --from-literal=admin-user=admin --from-literal=admin-password=<random>
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  service:
+    # [OPS] Docker Desktop maps LoadBalancer services to localhost; port 80 is taken by APISIX, so Grafana gets 3000
+    type: LoadBalancer
+    port: 3000
+  sidecar:
+    dashboards:
+      enabled: true               # [OPS] any ConfigMap labelled grafana_dashboard=1 becomes a dashboard: dashboards as code
+      searchNamespace: ALL
+
+alertmanager:
+  enabled: true                   # used for SLO alerts in Step 25
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+# [OPS] Docker Desktop does not expose these control-plane endpoints; scraping them only produces "down" targets
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false

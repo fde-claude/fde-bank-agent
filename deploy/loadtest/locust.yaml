@@ -1,0 +1,109 @@
+# deploy/loadtest/locust.yaml
+# [OPS] Locust runs INSIDE the cluster and calls the Service directly (east-west), so load spreads across all agent pods
+#       and the gateway's per-consumer rate limit does not get in the way. Own namespace: it is a tool, not the product.
+# Apply:  kubectl apply -f deploy/loadtest/locust.yaml      UI: http://localhost:8089
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loadtest
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: locustfile
+  namespace: loadtest
+data:
+  locustfile.py: |
+    # Two customer behaviours. "hi" = one model round trip; the balance question = two (tool call + answer).
+    from locust import HttpUser, task, between
+
+    class BankCustomer(HttpUser):
+        wait_time = between(0.5, 2.0)
+
+        @task(3)
+        def quick_question(self):
+            self.client.post("/chat", json={"message": "hi"}, name="/chat quick")
+
+        @task(1)
+        def balance_question(self):
+            self.client.post("/chat", json={"message": "What is the balance on ACC-1001?"}, name="/chat balance")
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust
+  namespace: loadtest
+  labels:
+    app.kubernetes.io/name: locust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: locust
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: locust
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: locust
+          image: locustio/locust:2.46.7
+          args: ["-f", "/mnt/locust/locustfile.py", "--host", "http://bank-agent.bank-agent.svc"]
+          ports:
+            - name: web
+              containerPort: 8089
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: web
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: web
+            periodSeconds: 20
+          volumeMounts:
+            - name: locustfile
+              mountPath: /mnt/locust
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: locustfile
+          configMap:
+            name: locustfile
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: locust
+  namespace: loadtest
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: locust
+  ports:
+    - name: web
+      port: 8089
+      targetPort: web

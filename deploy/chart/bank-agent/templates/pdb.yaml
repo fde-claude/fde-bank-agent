@@ -1,0 +1,16 @@
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
+# [OPS] keeps at least N pods up during voluntary disruptions (node drain, cluster upgrade)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "bank-agent.fullname" . }}
+  labels:
+    {{- include "bank-agent.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  # [OPS] pods that are already unhealthy may always be evicted; otherwise a stuck pod can block a node drain forever
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      {{- include "bank-agent.selectorLabels" . | nindent 6 }}
+{{- end }}
