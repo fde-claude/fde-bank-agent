@@ -1,0 +1,12 @@
+{{- if .Values.prompt.override }}
+# [OPS] per-environment prompt override (see values.yaml). Rendered only when prompt.override is set.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bank-agent.fullname" . }}-prompt
+  labels:
+    {{- include "bank-agent.labels" . | nindent 4 }}
+data:
+  system.md: |-
+{{ .Values.prompt.override | indent 4 }}
+{{- end }}

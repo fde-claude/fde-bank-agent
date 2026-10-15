@@ -27,6 +27,9 @@ spec:
         # [OPS] the fix for "pods don't restart when the ConfigMap changes": a hash of the rendered ConfigMap lives
         #       in the pod template, so any config change changes the template, which triggers a rolling update
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.prompt.override }}
+        checksum/prompt: {{ include (print $.Template.BasePath "/prompt-configmap.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -108,6 +111,17 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.prompt.override }}
+            - name: prompt
+              mountPath: /app/prompts/system.md
+              subPath: system.md
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.prompt.override }}
+        - name: prompt
+          configMap:
+            name: {{ include "bank-agent.fullname" . }}-prompt
+        {{- end }}

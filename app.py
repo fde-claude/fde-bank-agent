@@ -26,7 +26,7 @@ logging.basicConfig(  # [OPS] log level via env; one line per event, parseable b
 )
 log = logging.getLogger("bank-agent")
 
-app = FastAPI(title="bank-agent", version="0.4.0")  # version shows in /docs; later it comes from the image tag
+app = FastAPI(title="bank-agent", version="0.5.0")  # version shows in /docs; later it comes from the image tag
 
 # [OPS] Step 8: the three metrics every HTTP service should export. Scraped in-cluster by Prometheus via /metrics;
 #       the north gateway never publishes that path. Route paths are static here, so they are safe as label values.
@@ -41,6 +41,8 @@ app.mount("/metrics", make_asgi_app())
 
 class ChatRequest(BaseModel):  # DEV: the request contract. Validation is automatic: bad input -> 422, never reaches the model
     message: str = Field(min_length=1, max_length=2000)  # [OPS] input ceiling: bounds tokens per request (cost + abuse control)
+    # Step 12: an opaque conversation handle chosen by the client. Letters, digits, - and _ only: it becomes a Redis key.
+    session_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class ChatReply(BaseModel):
@@ -98,4 +100,5 @@ def ready():
 def chat(body: ChatRequest, request: Request):
     # Plain `def`, not `async def`, on purpose: the SDK call blocks, so FastAPI runs it in a worker thread
     # and the event loop stays free to answer probes. The thread pool size is this pod's concurrency ceiling.
-    return ChatReply(reply=run_agent(body.message, request_id=request.state.request_id), model=MODEL)
+    reply = run_agent(body.message, request_id=request.state.request_id, session_id=body.session_id or "")
+    return ChatReply(reply=reply, model=MODEL)

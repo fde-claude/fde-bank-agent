@@ -51,7 +51,9 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 
 # Explicit file list, never "COPY . ." : nothing unlisted (.env, .venv, .git) can ever leak into the image
-COPY --chown=appuser:appuser agent.py app.py ./
+COPY --chown=appuser:appuser agent.py app.py memory.py ./
+# Step 12: the prompt ships with the code it was tested with; a different file can be mounted over it per environment
+COPY --chown=appuser:appuser prompts/ ./prompts/
 
 # [OPS] everything from here on runs unprivileged. Numeric form on purpose: Kubernetes' runAsNonRoot
 #       check can only verify a numeric UID; "USER appuser" would be rejected by that policy.

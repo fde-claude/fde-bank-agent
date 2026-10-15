@@ -2,7 +2,7 @@
 # Laptop overrides only. Everything not listed comes from values.yaml.
 # Usage: helm upgrade --install bank-agent . -n bank-agent -f values-dev.yaml
 image:
-  tag: "0.4.0"
+  tag: "0.5.0"
 
 config:
   LOG_LEVEL: DEBUG      # shows every outbound HTTPS call the SDK makes: useful on a laptop, noisy in production

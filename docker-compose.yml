@@ -6,7 +6,7 @@ services:
   agent:
     build: .
     # [OPS] tag = app version. Never :latest. In Module 5 CI stamps the git SHA here.
-    image: bank-agent:0.4.0
+    image: bank-agent:0.5.0
     environment:
       # [OPS] Step 10: the SDK reads these two natively. The app now talks to the gateway and holds a revocable,
       #       budgeted virtual key. The provider key no longer exists anywhere in the app's world.
@@ -15,8 +15,15 @@ services:
       MODEL_ID: bank-primary          # an alias; the gateway decides Haiku or Opus
       SDK_MAX_RETRIES: "0"            # the gateway owns retries now; two retry layers multiply
       LOG_LEVEL: INFO
+      # Step 12: conversation memory in Redis, logical DB 1 (the gateway uses DB 0). Same Redis, two jobs, separate keyspaces.
+      REDIS_URL: redis://redis:6379/1
+      MEMORY_TURNS: "10"
+      MEMORY_TTL_SECONDS: "1800"
+      PROMPT_CACHE: "true"
     depends_on:
       litellm:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "8000:8000"

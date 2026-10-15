@@ -5,7 +5,7 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/sidd-harth/bank-agent
+  repository: ghcr.io/CHANGE-ME/bank-agent
   tag: ""             # empty = Chart.appVersion
   digest: ""          # [OPS] when set (sha256:...) it wins over tag. CI stamps this in Module 5.
   pullPolicy: IfNotPresent
@@ -21,6 +21,18 @@ config:
   MODEL_ID: bank-primary
   SDK_MAX_RETRIES: "0"
   LOG_LEVEL: INFO
+  # Step 12: conversation memory. Logical database 1 of the gateway's Redis (the gateway uses 0). Shared for the lab;
+  # production gives the app its own Redis. Empty REDIS_URL = memory off.
+  REDIS_URL: redis://litellm-redis.litellm.svc:6379/1
+  MEMORY_TURNS: "10"
+  MEMORY_TTL_SECONDS: "1800"
+  PROMPT_CACHE: "true"
+
+# [OPS] Step 12: the prompt ships inside the image, versioned and tested with the code. For a per-environment variant,
+#       set prompt.override to the full prompt text: it becomes a ConfigMap mounted over prompts/system.md, and a change
+#       to it rolls the pods like any other config change.
+prompt:
+  override: ""
 
 # [OPS] secret config is referenced, never created here. External Secrets Operator fills it in Module 6.
 #       Step 11: ANTHROPIC_API_KEY in this Secret is a LiteLLM virtual key, not the provider key.
