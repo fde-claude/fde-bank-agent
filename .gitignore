@@ -7,5 +7,7 @@ __pycache__/
 # [OPS] signing material and generated artifacts
 cosign.key
 sbom*.json
-backups/
-backups/
+
+# tool caches
+.pytest_cache/
+.ruff_cache/

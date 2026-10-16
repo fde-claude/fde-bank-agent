@@ -1,0 +1,14 @@
+# gitleaks configuration: the default ruleset plus allow-listed placeholders.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "documented placeholders that are not secrets"
+paths = [
+  '''\.env\.example$''',
+  '''docs/.*\.md$''',          # runbooks show the SHAPE of keys (sk-..., pk-lf-...), never real ones
+]
+regexes = [
+  '''REPLACE_ME''',
+  '''sk-test-not-a-real-key''',
+]

@@ -66,6 +66,10 @@ spec:
               value: {{ include "litellm.fullname" . }}-redis
             - name: REDIS_PORT
               value: "6379"
+            {{- if .Values.ollama.enabled }}
+            - name: OLLAMA_BASE_URL
+              value: http://{{ include "litellm.fullname" . }}-ollama:11434
+            {{- end }}
           # [OPS] the upstream image chooses its own user; we drop what we can without rebuilding it.
           #       Rebuilding the gateway image non-root and read-only is a Module 6 item.
           securityContext:

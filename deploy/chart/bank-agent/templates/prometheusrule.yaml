@@ -1,0 +1,87 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+# [OPS] Step 15: the app's alert rules travel with the app. The Prometheus Operator loads them because
+#       deploy/monitoring/values.yaml sets ruleSelectorNilUsesHelmValues: false. Severities: critical = page, warning = ticket.
+#       Module 7 turns the first three into SLOs with error budgets.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "bank-agent.fullname" . }}
+  labels:
+    {{- include "bank-agent.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: bank-agent.availability
+      rules:
+        - alert: BankAgentNoReadyPods
+          expr: kube_deployment_status_replicas_ready{namespace="{{ .Release.Namespace }}", deployment="{{ include "bank-agent.fullname" . }}"} == 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: "bank-agent has no ready pods"
+            runbook: "kubectl -n {{ .Release.Namespace }} describe deploy/{{ include "bank-agent.fullname" . }}; check image pull, probes, Secret"
+        - alert: BankAgentScrapeDown
+          expr: up{namespace="{{ .Release.Namespace }}", service="{{ include "bank-agent.fullname" . }}"} == 0
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "Prometheus cannot scrape a bank-agent pod"
+        - alert: BankAgentHighErrorRatio
+          expr: |
+            sum(rate(http_requests_total{namespace="{{ .Release.Namespace }}", path="/chat", status=~"5.."}[5m]))
+              / sum(rate(http_requests_total{namespace="{{ .Release.Namespace }}", path="/chat"}[5m])) > 0.05
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: "More than 5% of /chat requests fail"
+            runbook: "502 = gateway or provider; check the gateway UI Logs, then LiteLLM pods, then provider status"
+        - alert: BankAgentHighLatencyP95
+          expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace="{{ .Release.Namespace }}", path="/chat"}[5m])) by (le)) > 20
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "p95 /chat latency above 20 s for 10 minutes (edge timeout is 180 s)"
+    - name: bank-agent.genai
+      rules:
+        - alert: BankAgentLoopGuardTripped
+          expr: increase(agent_loop_guard_total{namespace="{{ .Release.Namespace }}"}[15m]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: "A request hit MAX_TURNS: the model may be looping on a tool"
+            runbook: "find the trace in Langfuse by time; check the tool result the model kept retrying"
+        - alert: BankAgentToolErrorRate
+          expr: |
+            sum(rate(agent_tool_calls_total{namespace="{{ .Release.Namespace }}", is_error="true"}[10m]))
+              / sum(rate(agent_tool_calls_total{namespace="{{ .Release.Namespace }}"}[10m])) > 0.10
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "More than 10% of tool executions fail"
+        - alert: BankAgentOutputCeilingHits
+          expr: |
+            sum(rate(agent_model_calls_total{namespace="{{ .Release.Namespace }}", stop_reason="max_tokens"}[15m]))
+              / sum(rate(agent_model_calls_total{namespace="{{ .Release.Namespace }}"}[15m])) > 0.05
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "Model calls are being cut off by max_tokens; answers may be truncated"
+        - alert: BankAgentKnowledgeGap
+          expr: |
+            sum(rate(agent_rag_searches_total{namespace="{{ .Release.Namespace }}", low_confidence="true"}[1h]))
+              / sum(rate(agent_rag_searches_total{namespace="{{ .Release.Namespace }}"}[1h])) > 0.5
+          for: 1h
+          labels: {severity: info}
+          annotations:
+            summary: "Half of knowledge-base searches are low confidence: customers ask about things the documents do not cover"
+        - alert: BankAgentPromptCacheCold
+          expr: |
+            sum(rate(agent_tokens_total{namespace="{{ .Release.Namespace }}", kind="cache_read"}[1h]))
+              / sum(rate(agent_tokens_total{namespace="{{ .Release.Namespace }}", kind=~"input|cache_read|cache_creation"}[1h])) < 0.3
+            and sum(rate(agent_model_calls_total{namespace="{{ .Release.Namespace }}"}[1h])) > 0.01
+          for: 1h
+          labels: {severity: info}
+          annotations:
+            summary: "Prompt cache hit ratio below 30%: the static prefix changed or traffic is too sparse to keep it warm"
+{{- end }}

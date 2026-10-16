@@ -1,0 +1,26 @@
+{{- if and .Values.rag.enabled .Values.rag.ingest.runOnUpgrade }}
+# [OPS] Helm hook: index the knowledge/ shipped in THIS image after every install/upgrade. Idempotent: unchanged chunks
+#       are skipped, so an upgrade without document changes finishes in seconds. Retries while the database starts.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "bank-agent.fullname" . }}-ingest
+  labels:
+    {{- include "bank-agent.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 8
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "bank-agent.name" . }}-ingest
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: ingest
+    spec:
+      {{- include "bank-agent.ingestPodSpec" . | nindent 6 }}
+{{- end }}

@@ -364,8 +364,181 @@ tests; the override is for environment-specific wording, never for untested beha
 git add -A && git commit -m "Step 12: more tools, Redis conversation memory, prompt as a versioned file"
 ```
 
-### Next: Step 13 `[DEV]` + `[OPS]`
+### Next: Step 13
 
-RAG: a `knowledge/` folder of bank policies, `ingest.py` to chunk and embed them into pgvector, an embedding model
-routed through LiteLLM, the `search_bank_faq` tool with citations, and the ingestion as a Kubernetes Job and CronJob.
-The first time the prompt grows enough for prompt caching to show in the logs.
+See below.
+
+---
+
+## Step 13 — RAG: the knowledge base `[DEV]` (slice 9) + `[OPS]`
+
+### What changes and why
+
+The agent gains a second kind of knowledge. Tools answer questions about *the customer's* data; the knowledge base
+answers questions about *the bank's rules*: limits, charges, timelines, procedures. The answer is grounded in a document
+and cites it, instead of coming from the model's memory.
+
+- **`knowledge/`**: five synthetic markdown documents for the fictional Harbor Street Bank, amounts in USD, each with
+  front matter (`title`, `audience`, `product`, `version`, `effective_date`, `owner`). Four are for customers. One,
+  `internal-escalation-matrix.md`, is **staff only** and sits in the same index on purpose: proving it can never reach a
+  customer conversation is the access-control lesson.
+- **`ingest.py`**: reads the documents, splits them by `##` heading (long sections split by paragraph), embeds each chunk
+  through the gateway, and writes to Postgres + pgvector. Idempotent by content hash: unchanged chunks are skipped,
+  changed ones re-embedded, removed ones deleted. It records the embedding model and dimension in `index_meta`; if either
+  changes, it rebuilds the whole index instead of mixing incomparable vectors. Runs as a Compose one-shot, a Kubernetes
+  Job after every install/upgrade, and a nightly CronJob.
+- **`rag.py`**: `embed()` calls the gateway's `/v1/embeddings` with the alias `bank-embeddings`; `search()` runs a cosine
+  similarity query **filtered by `audience` in SQL**. The filter is not a prompt instruction the model could ignore.
+- **`agent.py`**: a new tool, `search_bank_faq`, present only when `ENABLE_RAG=true`. Prompt rule 8 tells the model to use
+  it for policy questions, answer only from the results, cite document and section, and say "not available" when the
+  search is empty or low-confidence.
+- **The embedding model**: `nomic-embed-text`, served by an **Ollama** container on CPU, behind the gateway like every other
+  model. Its address differs per runtime, so the gateway config reads it from `OLLAMA_BASE_URL`.
+- **The index's own database**: `knowledge-db` (pgvector/pgvector:pg16) in Compose and a StatefulSet in Kubernetes,
+  separate from the gateway's Tier-0 Postgres. The index is *derived* data: its backup plan is "re-run ingest", which is
+  a different plan from the gateway's "restore".
+- **Why the documents ship inside the image**: the ingest Job indexes exactly the `knowledge/` that was reviewed and
+  released with the code, so a document change goes through the same gate as a prompt change. The nightly CronJob
+  re-indexes the same content (and later, Step 16, a CI path filter on `knowledge/` triggers a release).
+
+### 13.1 Get the files, add the new secret, release 0.6.0
+
+```bash
+bash ~/Downloads/step13-files.sh
+echo "KNOWLEDGE_DB_PASSWORD=$(openssl rand -hex 16)" >> .env
+OWNER=<your-owner> VERSION=0.6.0 ./scripts/release.sh
+```
+
+### 13.2 Allow the virtual key to use the embeddings alias (both gateways)
+
+The app's virtual key was created for `bank-primary` only. Embedding calls use the same key, so it must also be allowed
+`bank-embeddings`. Compose gateway UI (`localhost:4000/ui`) and cluster gateway UI (port-forward, `localhost:4001/ui`):
+Virtual Keys → `bank-agent-dev-key` / `bank-agent-k8s` → edit → Models: add `bank-embeddings`. Also add it to the team.
+This is the point of aliases and keys: a new model capability is a permission change, not a code change.
+
+### 13.3 Compose: model server, database, ingestion
+
+```bash
+docker compose up -d --build                     # new: knowledge-db, ollama, ollama-pull (one-shot); litellm restarts with the new alias
+docker compose ps                                # ollama-pull exits 0 once the model is downloaded (~300 MB, first time only)
+docker compose logs ollama-pull | tail -2
+docker compose logs litellm | grep -i "set models"   # bank-primary, bank-fallback, bank-embeddings
+```
+
+Prove the embeddings alias works through the gateway before building the index:
+
+```bash
+curl -s http://localhost:4000/v1/embeddings -H "Authorization: Bearer $LITELLM_VIRTUAL_KEY" -H 'content-type: application/json' \
+  -d '{"model":"bank-embeddings","input":["search_query: daily transfer limit"]}' | python3 -c "import sys,json; d=json.load(sys.stdin); print('dims:', len(d['data'][0]['embedding']))"   # 768
+```
+
+Build the index:
+
+```bash
+docker compose --profile ingest run --rm ingest
+# ... ingest complete {"documents": 5, "chunks": 29, "embedded": 29, "unchanged": 0, "deleted": 0, "model": "bank-embeddings", "dim": 768}
+docker compose --profile ingest run --rm ingest    # second run: "embedded": 0, "unchanged": 29  — idempotent
+docker compose exec knowledge-db psql -U knowledge -d knowledge -c "select audience, count(*) from chunks group by audience"
+docker compose exec knowledge-db psql -U knowledge -d knowledge -c "select * from index_meta"
+```
+
+Gateway UI → Logs: 29 embedding requests tagged `bank-agent`, cost near zero (local model), then nothing on the second run.
+
+### 13.4 Ask policy questions
+
+```bash
+S=cust-$(openssl rand -hex 3)
+chat() { curl -s -X POST localhost:8000/chat -H 'content-type: application/json' -d "{\"message\":\"$1\",\"session_id\":\"$S\"}"; echo; }
+chat "What is the daily limit for an instant transfer on a standard account?"      # USD 5,000, cites Transfer Limits / Daily transfer limits
+chat "How long does a replacement card take and what does it cost?"             # 5-7 working days, USD 10.00; cites the card policy
+chat "Can I get my cheque book delivered to my office?"                         # no: registered address only; cites Delivery
+chat "Who do staff escalate a fraud case to?"                                   # cannot find it: the staff document is filtered out
+```
+
+Gateway Logs for the first question: an embedding request (the query), then the chat request whose usage shows
+`cache_creation_input_tokens` the first time and `cache_read_input_tokens` after: the prompt plus four tool schemas is
+now long enough for Anthropic prompt caching to engage. The cost column drops accordingly.
+
+### 13.5 Drills
+
+**The leak test, properly.** The fourth question above shows the model *didn't* answer; prove *why*:
+
+```bash
+docker compose exec agent python -c "import rag,json; r=rag.search('escalation fraud queue goodwill payments', audience='staff'); print(json.dumps(r['results'][0], indent=1)[:400])"
+docker compose exec agent python -c "import rag; r=rag.search('escalation fraud queue goodwill payments', audience='customer'); print([x['document'] for x in r['results']])"
+```
+
+The staff chunk exists and is the top hit for a staff audience; for the customer audience it is absent from the
+results. The filter is SQL. In Step 21 the audience comes from the caller's identity instead of a deployment setting.
+
+**A changed document is a release.** Edit `knowledge/cheque-book-and-statements.md` (change a fee), rebuild
+(`docker compose up -d --build`), run the ingest one-shot: `"embedded": 1, "deleted": 1, "unchanged": 28`. Ask the fee
+question: the new value, cited.
+
+**Model change forces a rebuild.** Set `EMBED_DIM=768` to a different model name in the ingest environment
+(`EMBED_MODEL=other`) for one run: the log says `embedding model changed … full re-index` and every chunk is re-embedded.
+Vectors from two models never share a table.
+
+**Low confidence.** `chat "What is the bank's policy on pets in branches?"` → the search returns weak matches, the
+tool marks `low_confidence: true`, the model says it is not available and offers a colleague.
+
+### 13.6 Kubernetes
+
+```bash
+KPASS=$(openssl rand -hex 16)
+kubectl -n bank-agent create secret generic knowledge-db-secrets --from-literal=POSTGRES_PASSWORD="$KPASS"
+kubectl -n bank-agent delete secret bank-agent-secrets
+kubectl -n bank-agent create secret generic bank-agent-secrets \
+  --from-literal=ANTHROPIC_API_KEY="$VKEY" \
+  --from-literal=KNOWLEDGE_DATABASE_URL="postgresql://knowledge:$KPASS@bank-agent-knowledge-db:5432/knowledge"
+helm upgrade --install litellm deploy/chart/litellm -n litellm -f deploy/chart/litellm/values-dev.yaml   # adds ollama + the pull Job, rolls the proxy with the new alias
+kubectl -n litellm get pods,pvc,jobs -w                                                                 # ollama Running, litellm-ollama-pull Completed
+helm upgrade bank-agent deploy/chart/bank-agent -n bank-agent -f deploy/chart/bank-agent/values-dev.yaml  # knowledge-db StatefulSet, then the ingest hook Job runs
+kubectl -n bank-agent get pods,pvc,jobs,cronjobs
+kubectl -n bank-agent logs job/bank-agent-ingest | tail -3                                              # ingest complete {...}
+```
+
+Why `helm upgrade` waited: the ingest Job is a post-upgrade hook, so the release is not "done" until the index is built.
+A failed ingest is a failed deploy, which is the right outcome: an agent with an empty index would confidently say
+"not available" to every policy question.
+
+Ask the four questions through APISIX (Step 7 token). Then:
+
+```bash
+kubectl -n bank-agent exec bank-agent-knowledge-db-0 -- psql -U knowledge -d knowledge -c "select audience, count(*) from chunks group by audience"
+kubectl -n bank-agent get cronjob bank-agent-ingest                 # 0 2 * * *
+kubectl -n bank-agent create job --from=cronjob/bank-agent-ingest ingest-manual && kubectl -n bank-agent logs -f job/ingest-manual   # run the nightly job now: all unchanged
+```
+
+### 13.7 Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| ingest: 401 or "model not allowed" from the gateway | key not allowed `bank-embeddings` | 13.2 |
+| ingest: connection refused to ollama / `api_base` error | model server not up, or alias missing | `docker compose ps ollama`; `grep bank-embeddings` in the litellm "Set models" log |
+| embeddings return 1024 or another dim | a different model behind the alias | `EMBED_DIM` must match the model; the next ingest will rebuild |
+| the model answers policy questions from memory | `ENABLE_RAG` false or tool missing | `docker compose exec agent env \| grep ENABLE_RAG`; check `/docs` shows nothing new (tools are internal), check gateway Logs for the embedding call |
+| `low_confidence` on good questions | threshold too high, or the index is empty | `select count(*) from chunks`; lower `RAG_MIN_SCORE` |
+| ingest Job keeps failing on Kubernetes | database not ready yet, or Secret missing `KNOWLEDGE_DATABASE_URL` | `kubectl -n bank-agent describe job bank-agent-ingest`; the Job retries 8 times with backoff |
+| `pgvector` PVC Pending | no default StorageClass | as in Step 11 |
+
+### 13.8 Done when
+
+- Both gateways list three aliases and the virtual keys may use all of them.
+- The index has 29 chunks (24 customer, 5 staff) in Compose and in the cluster; a second ingest embeds nothing.
+- The four questions produce cited answers, and the staff question produces "not available" while the staff chunk is
+  provably present for the staff audience.
+- The gateway logs show prompt-cache reads on repeated questions.
+- The cluster CronJob exists and a manual run from it completes with all chunks unchanged.
+
+### Commit
+
+```bash
+git add -A && git commit -m "Step 13: knowledge base with pgvector, embeddings via the gateway, ingest Job and CronJob"
+```
+
+### Next: Step 14 `[OPS]`
+
+NetworkPolicies and egress allow-lists on a kind + Cilium cluster: the agent may talk to the gateway, Redis and the
+knowledge database and nothing else; the gateway may reach `api.anthropic.com`, Ollama and its own stores and nothing
+else. Prove the block first, then allow.

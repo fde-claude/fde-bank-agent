@@ -1,0 +1,94 @@
+{{- if .Values.ollama.enabled }}
+# [OPS] Step 13: the embedding model server. Treated like any dependency: pinned image, weights on a PersistentVolume,
+#       readiness probe, resource limits. The model itself is pulled by the Job in ollama-pull-job.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "litellm.fullname" . }}-ollama
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  selector:
+    {{- include "litellm.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "litellm.fullname" . }}-ollama-models
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.ollama.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ollama.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "litellm.fullname" . }}-ollama
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+  annotations:
+    # documented exceptions: the upstream ollama image runs as root and writes its model store to /root/.ollama
+    ignore-check.kube-linter.io/run-as-non-root: "upstream ollama image; hardened rebuild tracked for Module 6"
+    ignore-check.kube-linter.io/no-read-only-root-fs: "upstream ollama image writes its model store; hardened rebuild tracked for Module 6"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # the PVC is ReadWriteOnce: a rolling update would try to mount it twice
+  selector:
+    matchLabels:
+      {{- include "litellm.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama
+  template:
+    metadata:
+      labels:
+        {{- include "litellm.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ollama
+          image: {{ .Values.ollama.image }}
+          ports:
+            - name: http
+              containerPort: 11434
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.ollama.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 20
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ include "litellm.fullname" . }}-ollama-models
+{{- end }}

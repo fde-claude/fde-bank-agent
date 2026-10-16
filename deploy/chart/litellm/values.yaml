@@ -58,3 +58,18 @@ redis:
     limits:
       cpu: 500m
       memory: 256Mi
+
+# Step 13: the embedding model server behind the bank-embeddings alias. CPU inference, weights on a volume.
+ollama:
+  enabled: true
+  image: ollama/ollama:0.40.4
+  model: nomic-embed-text      # [OPS] a model version is a dependency version: pulled by a Job, recorded in the index
+  storage: 5Gi
+  storageClassName: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi

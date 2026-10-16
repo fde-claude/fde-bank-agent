@@ -1,0 +1,49 @@
+{{- if .Values.ollama.enabled }}
+# [OPS] Helm hook: after every install/upgrade, make sure the embedding model is present. Idempotent (a pull of a model
+#       that is already there is a no-op). Retries until the ollama Service answers.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "litellm.fullname" . }}-ollama-pull
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-pull
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    ignore-check.kube-linter.io/run-as-non-root: "upstream ollama image used as a client; short-lived job"
+    ignore-check.kube-linter.io/no-read-only-root-fs: "upstream ollama image used as a client; short-lived job"
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "litellm.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama-pull
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pull
+          image: {{ .Values.ollama.image }}
+          command: ["ollama", "pull", {{ .Values.ollama.model | quote }}]
+          env:
+            - name: OLLAMA_HOST
+              value: http://{{ include "litellm.fullname" . }}-ollama:11434
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+{{- end }}

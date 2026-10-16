@@ -1,0 +1,16 @@
+# [OPS] the other half of pinning: pinned versions rot unless something proposes updates. Dependabot opens pull requests
+#       for Actions (it understands SHA pins with version comments), pip pins and the Dockerfile base image.
+#       Every proposal runs the full CI, including the eval gate from Step 17, before a human merges it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+  - package-ecosystem: pip
+    directory: /
+    schedule: {interval: weekly}
+    groups:
+      python-deps: {patterns: ["*"]}
+  - package-ecosystem: docker
+    directory: /
+    schedule: {interval: weekly}

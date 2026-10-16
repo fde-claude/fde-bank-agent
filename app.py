@@ -8,6 +8,7 @@ agent.py is untouched. This file only adds the service surface Kubernetes needs:
 
 Run locally:  uvicorn app:app --reload --port 8000
 """
+
 import logging
 import os
 import time
@@ -19,6 +20,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Gauge, Histogram, make_asgi_app
 from pydantic import BaseModel, Field
 
+import telemetry  # Step 15: optional tracing; a no-op unless configured
 from agent import MODEL, run_agent  # DEV: the Step 1 loop, reused as-is
 
 logging.basicConfig(  # [OPS] log level via env; one line per event, parseable by any log shipper
@@ -26,21 +28,30 @@ logging.basicConfig(  # [OPS] log level via env; one line per event, parseable b
 )
 log = logging.getLogger("bank-agent")
 
-app = FastAPI(title="bank-agent", version="0.5.0")  # version shows in /docs; later it comes from the image tag
+app = FastAPI(title="bank-agent", version="0.7.0")  # version shows in /docs; later it comes from the image tag
 
 # [OPS] Step 8: the three metrics every HTTP service should export. Scraped in-cluster by Prometheus via /metrics;
 #       the north gateway never publishes that path. Route paths are static here, so they are safe as label values.
 REQUESTS = Counter("http_requests_total", "Requests by method, path and status", ["method", "path", "status"])
-IN_FLIGHT = Gauge("http_requests_in_flight", "Requests being handled right now", ["path"])  # [OPS] the autoscaling signal
+IN_FLIGHT = Gauge(
+    "http_requests_in_flight", "Requests being handled right now", ["path"]
+)  # [OPS] the autoscaling signal
 LATENCY = Histogram(
-    "http_request_duration_seconds", "Request latency in seconds", ["path"],
+    "http_request_duration_seconds",
+    "Request latency in seconds",
+    ["path"],
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 180),  # [OPS] top bucket = the gateway read timeout
 )
 app.mount("/metrics", make_asgi_app())
+telemetry.instrument_fastapi(app)  # Step 15: one server span per request (probes and scrapes excluded)
 
 
-class ChatRequest(BaseModel):  # DEV: the request contract. Validation is automatic: bad input -> 422, never reaches the model
-    message: str = Field(min_length=1, max_length=2000)  # [OPS] input ceiling: bounds tokens per request (cost + abuse control)
+class ChatRequest(
+    BaseModel
+):  # DEV: the request contract. Validation is automatic: bad input -> 422, never reaches the model
+    message: str = Field(
+        min_length=1, max_length=2000
+    )  # [OPS] input ceiling: bounds tokens per request (cost + abuse control)
     # Step 12: an opaque conversation handle chosen by the client. Letters, digits, - and _ only: it becomes a Redis key.
     session_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
@@ -70,7 +81,11 @@ async def access_log(request: Request, call_next):
     response.headers["x-request-id"] = request_id  # echo it back so client, gateway and app logs can be joined
     log.info(
         "request_id=%s method=%s path=%s status=%s latency_ms=%.0f",
-        request_id, request.method, path, response.status_code, elapsed * 1000,
+        request_id,
+        request.method,
+        path,
+        response.status_code,
+        elapsed * 1000,
     )
     return response
 

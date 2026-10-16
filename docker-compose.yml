@@ -6,7 +6,7 @@ services:
   agent:
     build: .
     # [OPS] tag = app version. Never :latest. In Module 5 CI stamps the git SHA here.
-    image: bank-agent:0.5.0
+    image: bank-agent:0.7.0
     environment:
       # [OPS] Step 10: the SDK reads these two natively. The app now talks to the gateway and holds a revocable,
       #       budgeted virtual key. The provider key no longer exists anywhere in the app's world.
@@ -20,10 +20,24 @@ services:
       MEMORY_TURNS: "10"
       MEMORY_TTL_SECONDS: "1800"
       PROMPT_CACHE: "true"
+      # Step 13: the knowledge base. Its own database; embeddings go through the gateway like every other model call.
+      ENABLE_RAG: "true"
+      KNOWLEDGE_DATABASE_URL: postgresql://knowledge:${KNOWLEDGE_DB_PASSWORD}@knowledge-db:5432/knowledge
+      RAG_AUDIENCE: customer
+      EMBED_MODEL: bank-embeddings
+      # Step 15: traces to Langfuse (same project as the gateway's records). Empty keys = tracing off.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://jp.cloud.langfuse.com}
+      OTEL_SERVICE_NAME: bank-agent
+      APP_VERSION: "0.7.0"
+      DEPLOY_ENV: compose
     depends_on:
       litellm:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      knowledge-db:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -92,6 +106,10 @@ services:
       DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@postgres:5432/litellm
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      OLLAMA_BASE_URL: http://ollama:11434      # Step 13: where the bank-embeddings alias is served
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}   # Step 15: every model call becomes a Langfuse observation
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
     volumes:
       # [OPS] one file, two consumers: Compose mounts it here; the Kubernetes ConfigMap in deploy/chart/litellm renders the same file
       - ./deploy/chart/litellm/files/config.yaml:/app/config.yaml:ro
@@ -115,5 +133,77 @@ services:
           memory: 1G
     restart: unless-stopped
 
+  knowledge-db:
+    # [OPS] Step 13: the RAG index. Its own instance, deliberately separate from the gateway's Tier-0 database:
+    #       this data is DERIVED (rebuildable from knowledge/ by running ingest), so it has a different backup story.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: knowledge
+      POSTGRES_PASSWORD: ${KNOWLEDGE_DB_PASSWORD}
+      POSTGRES_DB: knowledge
+    volumes:
+      - knowledgedata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knowledge -d knowledge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  ollama:
+    # [OPS] Step 13: the embedding model server (CPU). A model server is infrastructure: it has an image version, a model
+    #       version, a volume for weights and a health check, like any other dependency.
+    image: ollama/ollama:0.40.4
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    restart: unless-stopped
+
+  ollama-pull:
+    # one-shot: fetch the embedding model into the ollama volume (the Kubernetes equivalent is a Job)
+    image: ollama/ollama:0.40.4
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "nomic-embed-text"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  ingest:
+    # one-shot, on demand:  docker compose --profile ingest run --rm ingest
+    # [OPS] the same image as the agent, so the index is built from exactly the knowledge/ that was reviewed with the code
+    profiles: ["ingest"]
+    image: bank-agent:0.7.0
+    command: ["python", "ingest.py"]
+    environment:
+      KNOWLEDGE_DATABASE_URL: postgresql://knowledge:${KNOWLEDGE_DB_PASSWORD}@knowledge-db:5432/knowledge
+      ANTHROPIC_BASE_URL: http://litellm:4000
+      ANTHROPIC_API_KEY: ${LITELLM_VIRTUAL_KEY}
+      EMBED_MODEL: bank-embeddings
+      LOG_LEVEL: INFO
+    depends_on:
+      knowledge-db:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+    restart: "no"
+
 volumes:
   pgdata:
+  knowledgedata:
+  ollama:

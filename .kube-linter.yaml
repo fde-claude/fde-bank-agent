@@ -1,0 +1,7 @@
+# kube-linter configuration used by CI (manifests job) and locally: kube-linter lint deploy --config .kube-linter.yaml
+checks:
+  addAllBuiltIn: false
+  doNotAutoAddDefaults: false
+  exclude:
+    # the netpol folder holds policy objects only; this check only applies to workloads anyway
+    - "no-anti-affinity"   # single-replica stores (postgres, redis, ollama) are deliberately 1 replica in the lab

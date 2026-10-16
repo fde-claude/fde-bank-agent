@@ -8,3 +8,18 @@ data:
   {{- range $key, $value := .Values.config }}
   {{ $key }}: {{ $value | quote }}
   {{- end }}
+  # Step 15: tracing. The keys come from the Secret; telemetry.py switches on when both keys are present.
+  {{- if .Values.tracing.enabled }}
+  LANGFUSE_HOST: {{ .Values.tracing.langfuseHost | quote }}
+  OTEL_SERVICE_NAME: {{ include "bank-agent.fullname" . | quote }}
+  APP_VERSION: {{ .Chart.AppVersion | quote }}
+  DEPLOY_ENV: {{ .Values.tracing.deployEnv | quote }}
+  {{- end }}
+  # Step 13: retrieval settings. The tool exists in the model's view only when ENABLE_RAG is true.
+  ENABLE_RAG: {{ .Values.rag.enabled | quote }}
+  {{- if .Values.rag.enabled }}
+  RAG_AUDIENCE: {{ .Values.rag.audience | quote }}
+  EMBED_MODEL: {{ .Values.rag.embedModel | quote }}
+  RAG_TOP_K: {{ .Values.rag.topK | quote }}
+  RAG_MIN_SCORE: {{ .Values.rag.minScore | quote }}
+  {{- end }}

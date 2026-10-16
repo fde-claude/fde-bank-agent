@@ -1,0 +1,12 @@
+# [OPS] Tool configuration for the checks CI runs. The same commands work on your laptop: ruff check . ; pytest
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]   # errors, pyflakes, warnings, import order, bugbear, modernisation
+ignore = ["E501"]                          # long lines are allowed where a comment explains an ops decision
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

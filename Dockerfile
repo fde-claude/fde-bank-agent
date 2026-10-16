@@ -34,7 +34,7 @@ FROM python:3.12-slim
 # [OPS] OCI labels: GHCR links the image to its repo; tooling reads these
 LABEL org.opencontainers.image.title="bank-agent" \
       org.opencontainers.image.description="Claude-powered retail-banking assistant" \
-      org.opencontainers.image.source="https://github.com/sidd-harth/bank-agent"
+      org.opencontainers.image.source="https://github.com/CHANGE-ME/bank-agent"
 
 # [OPS] no .pyc writes (read-only filesystem later), unbuffered stdout (logs flush immediately), venv on PATH
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -51,9 +51,11 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 
 # Explicit file list, never "COPY . ." : nothing unlisted (.env, .venv, .git) can ever leak into the image
-COPY --chown=appuser:appuser agent.py app.py memory.py ./
+COPY --chown=appuser:appuser agent.py app.py memory.py rag.py ingest.py telemetry.py ./
 # Step 12: the prompt ships with the code it was tested with; a different file can be mounted over it per environment
 COPY --chown=appuser:appuser prompts/ ./prompts/
+# Step 13: the knowledge documents ship in the same image, so the ingestion Job indexes exactly the version that was reviewed
+COPY --chown=appuser:appuser knowledge/ ./knowledge/
 
 # [OPS] everything from here on runs unprivileged. Numeric form on purpose: Kubernetes' runAsNonRoot
 #       check can only verify a numeric UID; "USER appuser" would be rejected by that policy.

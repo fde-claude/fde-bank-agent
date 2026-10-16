@@ -5,7 +5,7 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/CHANGE-ME/bank-agent
+  repository: ghcr.io/sidd-harth/bank-agent
   tag: ""             # empty = Chart.appVersion
   digest: ""          # [OPS] when set (sha256:...) it wins over tag. CI stamps this in Module 5.
   pullPolicy: IfNotPresent
@@ -33,6 +33,33 @@ config:
 #       to it rolls the pods like any other config change.
 prompt:
   override: ""
+
+# Step 13: the knowledge base. Off by default; dev turns it on. Needs the gateway's bank-embeddings alias and the
+# virtual key in the app Secret to be allowed to use it. KNOWLEDGE_DATABASE_URL lives in the app Secret (it has a password).
+rag:
+  enabled: false
+  audience: customer          # [OPS] which chunks this deployment may ever retrieve; Step 21 derives it from identity
+  embedModel: bank-embeddings
+  topK: "3"
+  minScore: "0.45"
+  ingest:
+    runOnUpgrade: true        # a Helm hook Job (re)indexes after every install/upgrade: new image = new documents
+    schedule: "0 2 * * *"     # [OPS] nightly freshness run; idempotent, so a no-change night costs nothing
+
+# Step 13: the index's own Postgres (pgvector). Derived data: rebuildable by running ingest, unlike the gateway's DB.
+knowledgeDb:
+  enabled: false
+  image: pgvector/pgvector:pg16
+  storage: 1Gi
+  storageClassName: ""
+  existingSecret: knowledge-db-secrets   # key POSTGRES_PASSWORD, created imperatively
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
 
 # [OPS] secret config is referenced, never created here. External Secrets Operator fills it in Module 6.
 #       Step 11: ANTHROPIC_API_KEY in this Secret is a LiteLLM virtual key, not the provider key.
@@ -106,6 +133,17 @@ metrics:
     interval: 15s
     labels:
       release: monitoring
+  # Step 15: alert rules shipped with the app (templates/prometheusrule.yaml). Needs the Prometheus Operator CRDs.
+  prometheusRule:
+    enabled: false
+    labels:
+      release: monitoring
+
+# Step 15: traces to Langfuse. Keys live in the app Secret (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY); these are not secret.
+tracing:
+  enabled: false
+  langfuseHost: https://cloud.langfuse.com
+  deployEnv: dev
 
 # [OPS] KEDA scales on in-flight /chat requests per pod, the honest signal for an I/O-bound service.
 #       When enabled, the Deployment's replicas field is omitted so Helm never fights the autoscaler.

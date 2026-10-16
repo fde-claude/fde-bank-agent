@@ -2,7 +2,7 @@
 # Laptop overrides only. Everything not listed comes from values.yaml.
 # Usage: helm upgrade --install bank-agent . -n bank-agent -f values-dev.yaml
 image:
-  tag: "0.5.0"
+  tag: "0.7.0"
 
 config:
   LOG_LEVEL: DEBUG      # shows every outbound HTTPS call the SDK makes: useful on a laptop, noisy in production
@@ -19,7 +19,19 @@ resources:
 metrics:
   serviceMonitor:
     enabled: true
+  prometheusRule:
+    enabled: true
+
+# Step 15
+tracing:
+  enabled: true
 
 autoscaling:
   enabled: true
   maxReplicas: 4       # laptop ceiling
+
+# Step 13: knowledge base on
+rag:
+  enabled: true
+knowledgeDb:
+  enabled: true

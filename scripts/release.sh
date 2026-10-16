@@ -8,7 +8,7 @@
 set -euo pipefail
 
 OWNER="sidd-harth"
-VERSION="0.5.0"
+VERSION="0.7.0"
 IMAGE="ghcr.io/${OWNER}/bank-agent"
 KEY="${COSIGN_KEY:-cosign.key}"   # private key: never committed, never in the image
 PUB="${COSIGN_PUB:-cosign.pub}"   # public key: committed; Kyverno reads it in Module 6 to admit only images we signed
