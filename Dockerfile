@@ -9,7 +9,7 @@
 
 # ---------------------------------------------------------------- Stage 1: builder
 # [OPS] slim = Debian minus docs, locales and most tooling. Fewer packages, fewer CVEs for Trivy to find.
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 # [OPS] no pip cache or version nag inside the image
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -29,7 +29,7 @@ RUN pip install -r requirements.txt
 # ---------------------------------------------------------------- Stage 2: runtime
 # [OPS] production hardening step for later: pin by digest, e.g. python:3.12-slim@sha256:<digest>
 #       (docker buildx imagetools inspect python:3.12-slim). Renovate/Dependabot keep the digest fresh.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # [OPS] OCI labels: GHCR links the image to its repo; tooling reads these
 LABEL org.opencontainers.image.title="bank-agent" \
