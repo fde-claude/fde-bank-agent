@@ -91,8 +91,8 @@ jobs:
           curl -sSfL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" | grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | sed "s/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz/gitleaks.tgz/" | sha256sum -c -
           tar -xzf gitleaks.tgz gitleaks
-          ./gitleaks git --config .gitleaks.toml --redact --exit-code 1 .
-
+          ./gitleaks detect --config .gitleaks.toml --redact --exit-code 
+  
   manifests:
     name: manifests (helm lint, kube-linter)
     runs-on: ubuntu-latest

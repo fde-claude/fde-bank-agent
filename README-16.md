@@ -38,9 +38,7 @@ git add -A && git commit -m "Step 16: CI pipeline with pinned actions, checksumm
 git push
 ```
 
-GitHub → Actions → `ci`: four jobs in parallel (lint, test, secrets, manifests), then `build`. On `main` the build pushes
-`ghcr.io/<owner>/bank-agent:sha-<7 chars>` and `:<full sha>`, signs the digest, attaches the SBOM, verifies both, and
-writes the digest into the run's summary.
+GitHub → Actions → `ci`: four jobs in parallel (lint, test, secrets, manifests), then `build`. On `main` the build pushes `ghcr.io/<owner>/bank-agent:sha-<7 chars>` and `:<full sha>`, signs the digest, attaches the SBOM, verifies both, and writes the digest into the run's summary.
 
 Things to open while it runs:
 
@@ -71,16 +69,11 @@ characters, commit, push, open a PR: the `secrets` job fails and names the file 
 amend, force-push: it still fails, because the secret is in the branch's history. The fix in real life is rotating the
 key; the fix for the PR is squashing or rebasing it away. Lesson: `--redact` and full-history scanning are not optional.
 
-**A vulnerable dependency.** Pin `requests==2.19.1` in `requirements.txt` on a branch (an old release with known fixed
-CVEs). Trivy fails the build and names the CVE and the fixed version. Dependabot would have proposed the fix on its own
-the following week.
+**A vulnerable dependency.** Pin `requests==2.19.1` in `requirements.txt` on a branch (an old release with known fixed CVEs). Trivy fails the build and names the CVE and the fixed version. Dependabot would have proposed the fix on its own the following week.
 
-**An unpinned Action.** Change `actions/checkout@3d3c…` to `actions/checkout@v7` on a branch. Nothing fails yet, which is
-the uncomfortable truth: the pipeline cannot know a tag will stay honest. Step 17's nightly job adds a check that every
-`uses:` is a 40-character SHA. Revert.
+**An unpinned Action.** Change `actions/checkout@3d3c…` to `actions/checkout@v7` on a branch. Nothing fails yet, which is the uncomfortable truth: the pipeline cannot know a tag will stay honest. Step 17's nightly job adds a check that every `uses:` is a 40-character SHA. Revert.
 
-**A broken manifest.** Set `runAsNonRoot: false` in the chart's `podSecurityContext` on a branch: kube-linter fails the
-`manifests` job before any image is built.
+**A broken manifest.** Set `runAsNonRoot: false` in the chart's `podSecurityContext` on a branch: kube-linter fails the`manifests` job before any image is built.
 
 ### 16.5 Troubleshooting
 
