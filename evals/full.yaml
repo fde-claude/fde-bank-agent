@@ -1,0 +1,34 @@
+# evals/full.yaml  —  promptfoo config for the full suite.   Run:  npx promptfoo@0.124.1 eval -c evals/full.yaml
+# The system under test is the WHOLE agent behind POST /chat (prompt, loop, tools, gateway, knowledge base), not the raw model.
+description: "bank-agent full evals"
+
+providers:
+  - id: https
+    label: bank-agent-chat
+    config:
+      url: "{{ env.AGENT_URL }}/chat"
+      method: POST
+      headers:
+        content-type: application/json
+        x-request-id: "eval-{{ env.GITHUB_RUN_ID }}"
+      body:
+        message: "{{ prompt }}"
+      transformResponse: json.reply
+      maxRetries: 1
+
+prompts:
+  - "{{ message }}"                      # the customer's message is passed straight through
+
+defaultTest:
+  options:
+    # llm-rubric assertions are graded by the model behind the same gateway (so the grader is budget-capped too)
+    provider:
+      id: anthropic:messages:bank-primary
+      config:
+        apiBaseUrl: "{{ env.GATEWAY_URL }}"
+        apiKey: "{{ env.GATEWAY_KEY }}"
+        max_tokens: 300
+
+tests: file://golden/full.yaml
+
+outputPath: evals/results/full.json

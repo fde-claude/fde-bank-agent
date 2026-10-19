@@ -1,0 +1,138 @@
+# .github/workflows/evals.yaml
+# The eval gate. A unit test checks code; an eval checks BEHAVIOUR: the agent is started for real (prompt, loop, tools,
+# gateway with the production aliases) and asked the golden questions. Deterministic assertions plus a few LLM rubrics.
+#
+#   pull_request        -> smoke suite, knowledge base off:  8 cases, ~16 model calls, cents
+#   schedule (nightly)  -> full suite, knowledge base on (pgvector + Ollama + ingest): 15 cases, under a dollar
+#   workflow_dispatch   -> choose
+#
+# [OPS] Money: the gateway runs here with a hard daily budget (evals/litellm-ci.yaml) and a CI-ONLY provider key
+#       (secret ANTHROPIC_API_KEY_CI, a separate key in the Anthropic console). A runaway eval cannot touch production spend.
+name: evals
+
+on:
+  pull_request:
+    paths-ignore: ["docs/**", "README.md", "deploy/netpol/**"]
+  schedule:
+    - cron: "30 2 * * *"          # nightly, after the 02:00 ingest CronJob on the cluster has run
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "smoke or full"
+        default: smoke
+        type: choice
+        options: [smoke, full]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SUITE: ${{ github.event_name == 'schedule' && 'full' || (github.event.inputs.suite || 'smoke') }}
+  PROMPTFOO_VERSION: "0.124.1"
+  LITELLM_IMAGE: ghcr.io/berriai/litellm:main-stable
+  OLLAMA_IMAGE: ollama/ollama:0.40.4
+  AGENT_URL: http://127.0.0.1:8000
+  GATEWAY_URL: http://127.0.0.1:4000
+
+jobs:
+  evals:
+    name: ${{ github.event_name == 'schedule' && 'full' || (github.event.inputs.suite || 'smoke') }} suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      knowledge-db:
+        image: pgvector/pgvector:pg16
+        env: {POSTGRES_USER: knowledge, POSTGRES_PASSWORD: ci, POSTGRES_DB: knowledge}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U knowledge -d knowledge" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+
+      - name: refuse to run without the CI provider key
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY_CI }}
+        run: |
+          if [ -z "$KEY" ]; then echo "::error::secret ANTHROPIC_API_KEY_CI is not set"; exit 1; fi
+
+      - name: "start the gateway (budget-capped, master key minted for this run only)"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_CI }}
+        run: |
+          MASTER="sk-ci-$(openssl rand -hex 16)"
+          echo "::add-mask::$MASTER"
+          echo "GATEWAY_KEY=$MASTER" >> "$GITHUB_ENV"
+          docker run -d --name litellm --network host \
+            -e ANTHROPIC_API_KEY -e LITELLM_MASTER_KEY="$MASTER" -e OLLAMA_BASE_URL=http://127.0.0.1:11434 \
+            -v "$PWD/evals/litellm-ci.yaml:/app/config.yaml:ro" \
+            "$LITELLM_IMAGE" --config /app/config.yaml --port 4000
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null || { docker logs litellm | tail -50; exit 1; }
+
+      - name: "knowledge base (full suite only): embedding model + ingest"
+        if: env.SUITE == 'full'
+        run: |
+          docker run -d --name ollama --network host "$OLLAMA_IMAGE"
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/ > /dev/null && break; sleep 2; done
+          docker exec ollama ollama pull nomic-embed-text
+          pip install --quiet -r requirements.txt
+          KNOWLEDGE_DATABASE_URL=postgresql://knowledge:ci@localhost:5432/knowledge \
+          ANTHROPIC_BASE_URL="$GATEWAY_URL" ANTHROPIC_API_KEY="$GATEWAY_KEY" EMBED_MODEL=bank-embeddings python ingest.py
+
+      - name: start the agent against the gateway
+        env:
+          ANTHROPIC_BASE_URL: ${{ env.GATEWAY_URL }}
+          ANTHROPIC_API_KEY: ${{ env.GATEWAY_KEY }}
+          MODEL_ID: bank-primary
+          SDK_MAX_RETRIES: "0"
+          ENABLE_RAG: ${{ env.SUITE == 'full' && 'true' || 'false' }}
+          KNOWLEDGE_DATABASE_URL: postgresql://knowledge:ci@localhost:5432/knowledge
+          EMBED_MODEL: bank-embeddings
+          GATEWAY_TAG: ci-evals
+          LOG_LEVEL: INFO
+        run: |
+          pip install --quiet -r requirements.txt
+          nohup uvicorn app:app --host 127.0.0.1 --port 8000 > agent.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/ready > /dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:8000/ready || { cat agent.log; exit 1; }
+
+      - name: run the ${{ env.SUITE }} suite
+        env:
+          PROMPTFOO_DISABLE_TELEMETRY: "1"
+          PROMPTFOO_DISABLE_UPDATE: "1"
+          PROMPTFOO_DISABLE_SHARING: "1"
+        run: |
+          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c "evals/${SUITE}.yaml" --no-cache --no-progress-bar
+          # exit code 100 = at least one assertion failed = this change does not ship
+
+      - name: results and gateway spend
+        if: always()
+        run: |
+          [ -f "evals/results/${SUITE}.json" ] && python3 - << 'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          d = json.load(open(f"evals/results/{os.environ['SUITE']}.json"))["results"]
+          s = d["stats"]; print(f"### Eval gate: {os.environ['SUITE']} suite\n\n{s['successes']} passed, {s['failures']} failed\n")
+          for r in d["results"]:
+              mark = "✅" if r.get("success") else "❌"
+              print(f"- {mark} {r['testCase'].get('description','')}")
+          PY
+          echo; echo "gateway spend this run (USD): $(curl -s http://127.0.0.1:4000/global/spend -H "Authorization: Bearer $GATEWAY_KEY" || echo n/a)" >> "$GITHUB_STEP_SUMMARY"
+          docker logs litellm 2>&1 | tail -20 > gateway.log || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: eval-${{ env.SUITE }}-${{ github.run_id }}
+          path: |
+            evals/results/
+            agent.log
+            gateway.log

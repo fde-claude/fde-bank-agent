@@ -1,0 +1,38 @@
+# evals/litellm-ci.yaml
+# [OPS] The gateway as CI runs it: no database, no UI, one master key minted per run, and a HARD BUDGET. A runaway eval,
+#       a looping agent or a mistake in a test can spend at most this much, and it spends it on the CI provider key,
+#       never on the production one. Same aliases as production, so the system under test is the real configuration.
+model_list:
+  - model_name: bank-primary
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: bank-fallback
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: bank-embeddings
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: os.environ/OLLAMA_BASE_URL
+
+router_settings:
+  fallbacks:
+    - bank-primary: ["bank-fallback"]
+  num_retries: 1
+  allowed_fails: 3
+  cooldown_time: 30
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 90
+  cache: false
+  # [OPS] the cap. Proxy-wide, in USD, per calendar day. The smoke suite costs cents; the full nightly suite under a dollar.
+  max_budget: 2.0
+  budget_duration: 1d
+  turn_off_message_logging: true     # CI logs are public to the repo's members; prompts stay out of them
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  max_parallel_requests: 8
+  global_max_parallel_requests: 8
