@@ -1,0 +1,53 @@
+# .github/workflows/nightly-drift.yaml
+# Things that go wrong without anyone changing anything: a model gets retired, a CVE fix is published for an image we
+# already run, an Action pin gets loosened in a hurry. Checked every night; failures open an issue.
+name: nightly-drift
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  packages: read
+
+env:
+  TRIVY_VERSION: "0.76.0"
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: 1/3 model deprecation check (gateway aliases vs the provider's model list)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_CI }}
+        run: ./scripts/check-models.sh deploy/chart/litellm/files/config.yaml
+
+      - name: 2/3 vulnerability rescan of the images we are running
+        run: |
+          curl -sSfL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" | grep "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | sed "s/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz/trivy.tgz/" | sha256sum -c -
+          tar -xzf trivy.tgz trivy
+          # the app image the dev values point at, and the gateway image: a NEW fix for an image already deployed is the drift
+          APP_TAG=$(grep -E '^\s+tag:' deploy/chart/bank-agent/values-dev.yaml | head -1 | sed 's/.*tag: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/')
+          APP_REPO=$(grep -E '^\s+repository:' deploy/chart/bank-agent/values.yaml | head -1 | awk '{print $2}')
+          echo "scanning ${APP_REPO}:${APP_TAG}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          ./trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "${APP_REPO}:${APP_TAG}"
+          ./trivy image --severity CRITICAL --ignore-unfixed --exit-code 1 ghcr.io/berriai/litellm:main-stable
+
+      - name: 3/3 every workflow action pinned to a commit SHA
+        run: ./scripts/check-action-pins.sh
+
+      - name: open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --title "nightly-drift failed $(date -u +%F)" \
+            --body "A nightly drift check failed: model deprecation, a new vulnerability fix for a running image, or an unpinned action. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label drift || true

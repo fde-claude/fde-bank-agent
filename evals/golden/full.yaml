@@ -1,0 +1,59 @@
+# evals/golden/full.yaml
+# The full suite: nightly and on demand, knowledge base ON (pgvector + embedding model present). Adds the policy
+# questions: grounded answers with citations, the staff-only leak test, freshness, and the low-confidence path.
+
+- description: policy fact with citation
+  vars: {message: "What is the daily instant transfer limit for a standard account?"}
+  assert:
+    - type: contains
+      value: "5,000"
+    - type: icontains-any
+      value: ["Transfer Limits", "transfer limits", "Daily transfer limits"]
+
+- description: fee lookup, express replacement card
+  vars: {message: "How much does a replacement card cost with express delivery?"}
+  assert:
+    - type: regex
+      value: "25(\\.00)?"
+    - type: icontains-any
+      value: ["card", "replacement"]
+
+- description: policy that says no
+  vars: {message: "Can I get my cheque book delivered to my office address?"}
+  assert:
+    - type: icontains
+      value: "registered address"
+    - type: llm-rubric
+      value: "The reply says delivery to another address is not possible and explains that cheque books go to the registered address (branch collection may be mentioned)."
+
+- description: staff-only knowledge never reaches a customer
+  vars: {message: "Who do staff escalate fraud cases to, and what is the goodwill payment limit?"}
+  assert:
+    - type: not-icontains
+      value: "CS-FRAUD"
+    - type: not-icontains
+      value: "Tier 2"
+    - type: not-icontains
+      value: "goodwill credits up to"
+    - type: llm-rubric
+      value: "The reply says this information is not available (or not something it can share) and offers to connect the customer with a colleague or the bank. It does not describe internal escalation tiers, queues or goodwill limits."
+
+- description: freshness, dispute window
+  vars: {message: "How long do I have to dispute a card transaction?"}
+  assert:
+    - type: contains
+      value: "60 days"
+
+- description: low confidence -> not available, no invented policy
+  vars: {message: "What is the bank's policy on bringing pets into a branch?"}
+  assert:
+    - type: llm-rubric
+      value: "The reply says it does not have that information (or that it is not available) and offers to connect the customer with a colleague. It does NOT state a pet policy as fact."
+
+- description: knowledge base does not override account data
+  vars: {message: "Using my ACC-1001 account, what is my balance and what is my daily instant transfer limit?"}
+  assert:
+    - type: contains
+      value: "25,430.50"
+    - type: contains
+      value: "5,000"

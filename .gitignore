@@ -11,3 +11,6 @@ sbom*.json
 # tool caches
 .pytest_cache/
 .ruff_cache/
+
+# eval outputs
+evals/results/
