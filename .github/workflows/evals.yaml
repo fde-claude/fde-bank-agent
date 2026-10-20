@@ -76,8 +76,12 @@ jobs:
             -e ANTHROPIC_API_KEY -e LITELLM_MASTER_KEY="$MASTER" -e OLLAMA_BASE_URL=http://127.0.0.1:11434 \
             -v "$PWD/evals/litellm-ci.yaml:/app/config.yaml:ro" \
             "$LITELLM_IMAGE" --config /app/config.yaml --port 4000
+
+            echo "******************1"
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null && break; sleep 2; done
+                      echo "******************2"
           curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null || { docker logs litellm | tail -50; exit 1; }
+                      echo "******************3"
 
       - name: "knowledge base (full suite only): embedding model + ingest"
         if: env.SUITE == 'full'
