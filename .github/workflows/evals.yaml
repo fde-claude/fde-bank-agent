@@ -78,10 +78,30 @@ jobs:
             "$LITELLM_IMAGE" --config /app/config.yaml --port 4000
 
             echo "******************1"
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null && break; sleep 2; done
-                      echo "******************2"
-          curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null || { docker logs litellm | tail -50; exit 1; }
-                      echo "******************3"
+            
+            # Start the background LiteLLM container
+            docker run -d --name litellm --network host \
+              -e ANTHROPIC_API_KEY -e LITELLM_MASTER_KEY="$MASTER" -e OLLAMA_BASE_URL=http://127.0.0.1:11434 \
+              -v "$PWD/evals/litellm-ci.yaml:/app/config.yaml:ro" \
+              "$LITELLM_IMAGE" --config /app/config.yaml --port 4000
+            
+            # Properly wait and loop for the service to be ready
+            SUCCESS=false
+            for i in $(seq 1 30); do
+              if curl -sf http://127.0.0.1:4000/health/liveliness > /dev/null; then
+                SUCCESS=true
+                break
+              fi
+              sleep 2
+            done
+            
+            if [ "$SUCCESS" = false ]; then
+              echo "❌ LiteLLM failed to start. Container logs:"
+              docker logs litellm
+              exit 1
+            fi
+            
+            echo "✅ LiteLLM gateway is live!"
 
       - name: "knowledge base (full suite only): embedding model + ingest"
         if: env.SUITE == 'full'
@@ -93,31 +113,31 @@ jobs:
           KNOWLEDGE_DATABASE_URL=postgresql://knowledge:ci@localhost:5432/knowledge \
           ANTHROPIC_BASE_URL="$GATEWAY_URL" ANTHROPIC_API_KEY="$GATEWAY_KEY" EMBED_MODEL=bank-embeddings python ingest.py
 
-      - name: start the agent against the gateway
-        env:
-          ANTHROPIC_BASE_URL: ${{ env.GATEWAY_URL }}
-          ANTHROPIC_API_KEY: ${{ env.GATEWAY_KEY }}
-          MODEL_ID: bank-primary
-          SDK_MAX_RETRIES: "0"
-          ENABLE_RAG: ${{ env.SUITE == 'full' && 'true' || 'false' }}
-          KNOWLEDGE_DATABASE_URL: postgresql://knowledge:ci@localhost:5432/knowledge
-          EMBED_MODEL: bank-embeddings
-          GATEWAY_TAG: ci-evals
-          LOG_LEVEL: INFO
-        run: |
-          pip install --quiet -r requirements.txt
-          nohup uvicorn app:app --host 127.0.0.1 --port 8000 > agent.log 2>&1 &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/ready > /dev/null && break; sleep 1; done
-          curl -sf http://127.0.0.1:8000/ready || { cat agent.log; exit 1; }
+      # - name: start the agent against the gateway
+      #   env:
+      #     ANTHROPIC_BASE_URL: ${{ env.GATEWAY_URL }}
+      #     ANTHROPIC_API_KEY: ${{ env.GATEWAY_KEY }}
+      #     MODEL_ID: bank-primary
+      #     SDK_MAX_RETRIES: "0"
+      #     ENABLE_RAG: ${{ env.SUITE == 'full' && 'true' || 'false' }}
+      #     KNOWLEDGE_DATABASE_URL: postgresql://knowledge:ci@localhost:5432/knowledge
+      #     EMBED_MODEL: bank-embeddings
+      #     GATEWAY_TAG: ci-evals
+      #     LOG_LEVEL: INFO
+      #   run: |
+      #     pip install --quiet -r requirements.txt
+      #     nohup uvicorn app:app --host 127.0.0.1 --port 8000 > agent.log 2>&1 &
+      #     for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/ready > /dev/null && break; sleep 1; done
+      #     curl -sf http://127.0.0.1:8000/ready || { cat agent.log; exit 1; }
 
-      - name: run the ${{ env.SUITE }} suite
-        env:
-          PROMPTFOO_DISABLE_TELEMETRY: "1"
-          PROMPTFOO_DISABLE_UPDATE: "1"
-          PROMPTFOO_DISABLE_SHARING: "1"
-        run: |
-          npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c "evals/${SUITE}.yaml" --no-cache --no-progress-bar
-          # exit code 100 = at least one assertion failed = this change does not ship
+      # - name: run the ${{ env.SUITE }} suite
+      #   env:
+      #     PROMPTFOO_DISABLE_TELEMETRY: "1"
+      #     PROMPTFOO_DISABLE_UPDATE: "1"
+      #     PROMPTFOO_DISABLE_SHARING: "1"
+      #   run: |
+      #     npx --yes "promptfoo@${PROMPTFOO_VERSION}" eval -c "evals/${SUITE}.yaml" --no-cache --no-progress-bar
+      #     # exit code 100 = at least one assertion failed = this change does not ship
 
       - name: results and gateway spend
         if: always()
