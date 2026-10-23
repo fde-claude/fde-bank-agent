@@ -1,8 +1,8 @@
 # [OPS] Exact pins = reproducible builds. Same file feeds the Dockerfile in Module 2.
 # Bumps arrive as pull requests (Dependabot/Renovate) and must pass the eval gate in Module 5.
-anthropic==1.13.0
-python-dotenv==1.2.2
-fastapi==0.143.0
+anthropic==1.15.0
+python-dotenv==1.2.4
+fastapi==0.153.0
 uvicorn[standard]==0.54.0
 prometheus-client==0.26.0
 redis==8.1.0
